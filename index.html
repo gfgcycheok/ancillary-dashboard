@@ -86,6 +86,13 @@
   .reset-btn:hover{background:#e7e9ee;}
   .toggle-rates{font-size:11.5px; color:var(--blue); cursor:pointer; font-weight:600; user-select:none;}
 
+  .rate-cell{display:flex; align-items:center; gap:4px; justify-content:flex-end;}
+  .rate-cell input{width:58px; padding:3px 5px; border-radius:5px; border:1px solid var(--border); font-size:11.5px; text-align:right; font-variant-numeric:tabular-nums; background:var(--surface-1); color:var(--text-primary);}
+  .rate-cell input.overridden{border-color:var(--blue); background:#eaf2fc; font-weight:700; color:var(--blue);}
+  .rate-reset{cursor:pointer; color:var(--muted); font-size:12px; line-height:1; visibility:hidden; padding:0 1px;}
+  .rate-cell input.overridden ~ .rate-reset{visibility:visible;}
+  .rate-reset:hover{color:var(--critical);}
+
   .footer-notes{background:var(--surface-1); border-radius:12px; padding:14px 18px; box-shadow:0 1px 3px rgba(11,11,11,0.06); border:1px solid var(--border); font-size:11px; color:var(--text-secondary); display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; margin-top:6px;}
   .footer-notes b{color:var(--text-primary);}
   .footer-notes ul{margin:4px 0 0; padding-left:16px;}
@@ -123,13 +130,16 @@
 
   <div class="panel" id="rates-box" style="display:none; margin-bottom:14px;">
     <div class="rates-panel">
-      <b style="font-size:12px;">Target = Occupied Room Nights &times; rate/room-night, by hotel size tier:</b>
+      <b style="font-size:12px;">Default target = Occupied Room Nights &times; rate/room-night, by hotel size tier:</b>
       <div class="rate-input"><label>High &#8805; rooms</label><input type="number" id="r-highmin" value="200"></div>
       <div class="rate-input"><label>High rate (RM)</label><input type="number" step="0.1" id="r-highrate" value="2.0"></div>
       <div class="rate-input"><label>Medium &#8805; rooms</label><input type="number" id="r-medmin" value="100"></div>
       <div class="rate-input"><label>Medium rate (RM)</label><input type="number" step="0.1" id="r-medrate" value="1.5"></div>
       <div class="rate-input"><label>Low rate (RM)</label><input type="number" step="0.1" id="r-lowrate" value="1.0"></div>
-      <button class="reset-btn" id="reset-rates">Reset to default</button>
+      <button class="reset-btn" id="reset-rates">Reset defaults</button>
+      <span style="width:1px; height:24px; background:var(--border);"></span>
+      <span style="font-size:11px; color:var(--text-secondary); max-width:260px;">Need a different target for one property? Edit its <b>Target/Stay</b> value directly in the Hotel Performance Summary table below &mdash; it overrides the tier rate for that hotel only, and is saved in this browser.</span>
+      <button class="reset-btn" id="reset-overrides">Clear all per-hotel overrides</button>
     </div>
   </div>
 
@@ -197,7 +207,7 @@
       <b>Definitions</b>
       <ul>
         <li>Occupancy Rate = Occupied Room Nights &divide; (Rooms &times; Days in month, or days elapsed for the current partial month)</li>
-        <li>Target Revenue = Occupied Room Nights &times; Target Rate per Occupied Room (by Hotel Size tier, adjustable above)</li>
+        <li>Target Revenue = Occupied Room Nights &times; Target Rate per Occupied Room (by Hotel Size tier, adjustable above &mdash; or per-hotel via the Target/Stay column below)</li>
         <li>Achievement % = Actual Sales &divide; Target Sales &times; 100. Sales/Stay = Actual Sales &divide; Occupied Room Nights</li>
       </ul>
     </div>
@@ -225,6 +235,20 @@ const COLORS = { blue:'#2a78d6', orange:'#eb6834', aqua:'#1baf7a', yellow:'#eda1
 
 let rates = Object.assign({}, RAW.defaultRates);
 
+// ---------- per-hotel target overrides (persisted in this browser) ----------
+const OVERRIDES_KEY = 'ancillaryDashboard.rateOverrides.v1';
+let rateOverrides = {};
+try {
+  rateOverrides = JSON.parse(localStorage.getItem(OVERRIDES_KEY) || '{}');
+} catch (e) { rateOverrides = {}; }
+function saveOverrides(){
+  try { localStorage.setItem(OVERRIDES_KEY, JSON.stringify(rateOverrides)); } catch (e) {}
+}
+function rateForHotel(h){
+  const ov = rateOverrides[h.name];
+  return (ov !== undefined && ov !== null && !isNaN(ov)) ? ov : rateForRooms(h.rooms);
+}
+
 function fmtRM(n){
   if (n===null || n===undefined || isNaN(n)) return 'RM0.00';
   const sign = n<0 ? '-' : '';
@@ -232,6 +256,7 @@ function fmtRM(n){
 }
 function fmtNum(n){ return Math.round(n).toLocaleString('en-MY'); }
 function fmtPct(n){ return (isFinite(n)? n.toFixed(1):'0.0') + '%'; }
+function escAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 
 function sizeCategory(rooms){
   if (rooms >= rates.highMin) return 'High';
@@ -294,6 +319,12 @@ document.getElementById('reset-rates').addEventListener('click', ()=>{
   document.getElementById('r-lowrate').value = rates.lowRate;
   renderAll();
 });
+document.getElementById('reset-overrides').addEventListener('click', ()=>{
+  if (Object.keys(rateOverrides).length && !confirm('Clear all per-hotel target overrides? This cannot be undone.')) return;
+  rateOverrides = {};
+  saveOverrides();
+  renderAll();
+});
 
 // ---------- filtering ----------
 function activeHotels(){
@@ -311,7 +342,7 @@ function filteredHotels(){
 function hotelStats(h, mon, incomeType){
   const rn = h.roomNights[mon] || 0;
   const actual = revenueFor(h, mon, incomeType);
-  const rate = rateForRooms(h.rooms);
+  const rate = rateForHotel(h);
   const target = rn * rate;
   const days = daysForMonth(mon);
   const occRate = days>0 ? (rn/(h.rooms*days))*100 : 0;
@@ -389,7 +420,7 @@ function renderTrend(incomeType){
   const labels = RAW.months.map(m=>RAW.monthLabels[m]);
   const actuals = RAW.months.map(mon => hotels.reduce((s,h)=>s+revenueFor(h,mon,incomeType),0));
   const targets = RAW.months.map(mon => hotels.reduce((s,h)=>{
-    const rn = h.roomNights[mon]||0; return s + rn*rateForRooms(h.rooms);
+    const rn = h.roomNights[mon]||0; return s + rn*rateForHotel(h);
   },0));
   destroyChart('trend');
   const ctx = document.getElementById('trendChart');
@@ -418,13 +449,13 @@ function renderTopLists(mon, incomeType){
 
   const best = [...rows].sort((a,b)=>b.achievement-a.achievement).slice(0,10);
   const bestBody = document.querySelector('#top-best tbody');
-  bestBody.innerHTML = best.map((r,i)=>`<tr><td class="rank">${i+1}</td><td class="truncate" title="${r.name}">${r.name}</td>
+  bestBody.innerHTML = best.map((r,i)=>`<tr><td class="rank">${i+1}</td><td class="truncate" title="${escAttr(r.name)}">${r.name}</td>
     <td class="num">${fmtRM(r.actual)}</td><td class="num">${fmtRM(r.target)}</td>
     <td class="num ${r.achievement>=100?'pos':''}">${fmtPct(r.achievement)}</td></tr>`).join('');
 
   const worst = [...rows].sort((a,b)=>a.gap-b.gap).slice(0,10);
   const worstBody = document.querySelector('#top-worst tbody');
-  worstBody.innerHTML = worst.map((r,i)=>`<tr><td class="rank">${i+1}</td><td class="truncate" title="${r.name}">${r.name}</td>
+  worstBody.innerHTML = worst.map((r,i)=>`<tr><td class="rank">${i+1}</td><td class="truncate" title="${escAttr(r.name)}">${r.name}</td>
     <td class="num">${fmtRM(r.actual)}</td><td class="num">${fmtRM(r.target)}</td>
     <td class="num neg">${fmtRM(r.gap)}</td></tr>`).join('');
 }
@@ -508,15 +539,34 @@ function renderSummary(mon, incomeType){
     let statusClass='dot-poor', statusLabel='Poor';
     if (r.achievement>=100){statusClass='dot-good'; statusLabel='Good';}
     else if (r.achievement>=70){statusClass='dot-avg'; statusLabel='Average';}
-    return `<tr><td class="truncate" title="${r.name}">${r.name}</td><td>${r.brand}</td><td class="num">${r.rooms}</td>
+    const isOverridden = rateOverrides[r.name] !== undefined;
+    const safeName = escAttr(r.name);
+    return `<tr><td class="truncate" title="${escAttr(r.name)}">${r.name}</td><td>${r.brand}</td><td class="num">${r.rooms}</td>
       <td class="num">${fmtNum(r.roomNights)}</td><td class="num">${fmtPct(r.occRate)}</td>
-      <td>${r.category}</td><td class="num">RM${r.rate.toFixed(2)}</td>
+      <td>${r.category}</td>
+      <td class="num"><div class="rate-cell">RM<input type="number" step="0.1" min="0" class="rate-override-input ${isOverridden?'overridden':''}" data-hotel="${safeName}" value="${r.rate.toFixed(2)}" title="${isOverridden?'Custom target for this hotel':'Default '+r.category+'-tier rate — edit to override just this hotel'}"><span class="rate-reset" data-hotel="${safeName}" title="Reset to default tier rate">&#8635;</span></div></td>
       <td class="num">${fmtRM(r.target)}</td><td class="num">${fmtRM(r.actual)}</td>
       <td class="num">RM${r.salesPerStay.toFixed(2)}</td>
       <td class="num">${fmtPct(r.achievement)}</td>
       <td><span class="status-dot ${statusClass}"></span>${statusLabel}</td></tr>`;
   }).join('');
 }
+document.querySelector('#summary-table tbody').addEventListener('change', e=>{
+  if (!e.target.classList.contains('rate-override-input')) return;
+  const hotel = e.target.getAttribute('data-hotel');
+  const v = parseFloat(e.target.value);
+  if (isNaN(v) || v < 0){ delete rateOverrides[hotel]; } else { rateOverrides[hotel] = v; }
+  saveOverrides();
+  renderAll();
+});
+document.querySelector('#summary-table tbody').addEventListener('click', e=>{
+  if (!e.target.classList.contains('rate-reset')) return;
+  const hotel = e.target.getAttribute('data-hotel');
+  if (rateOverrides[hotel] === undefined) return;
+  delete rateOverrides[hotel];
+  saveOverrides();
+  renderAll();
+});
 document.querySelectorAll('#summary-table th[data-key]').forEach(th=>{
   th.addEventListener('click', ()=>{
     const key = th.getAttribute('data-key');
