@@ -98,6 +98,15 @@
   .footer-notes ul{margin:4px 0 0; padding-left:16px;}
   .footer-notes li{margin-bottom:3px;}
 
+  .status-filter-row{display:flex; gap:8px; margin:2px 0 10px; flex-wrap:wrap;}
+  .status-pill{display:inline-flex; align-items:center; gap:5px; padding:4px 11px; border-radius:999px; border:1px solid var(--border); background:var(--surface-1); font-size:11px; font-weight:700; cursor:pointer; color:var(--text-secondary); user-select:none; transition:background .1s,color .1s,border-color .1s;}
+  .status-pill:hover{border-color:var(--blue); color:var(--blue);}
+  .status-pill.active{background:var(--navy); border-color:var(--navy); color:#fff;}
+  .status-pill .cnt{opacity:0.75; font-weight:600;}
+  .status-label{cursor:pointer; text-decoration:underline dotted; text-underline-offset:2px;}
+  .status-label:hover{color:var(--blue);}
+  tr.total-row td{font-weight:700; border-top:2px solid var(--text-primary); border-bottom:none; background:#f7f9fc;}
+
   @media (max-width: 1200px){
     .kpi-row{grid-template-columns:repeat(3,1fr);}
     .grid3{grid-template-columns:1fr;}
@@ -188,6 +197,7 @@
   <div class="panel" style="margin-bottom:14px;">
     <h3>HOTEL PERFORMANCE SUMMARY</h3>
     <p class="sub" id="summary-sub">Click a column header to sort &middot; selected month &amp; filters</p>
+    <div class="status-filter-row" id="status-filter-row"></div>
     <div class="scroll-y" style="max-height:480px;">
       <table id="summary-table">
         <thead><tr>
@@ -525,20 +535,39 @@ function renderMatrix(mon, incomeType){
 
 // ---------- summary table ----------
 let sortKey = 'actual', sortDir = -1;
+let summaryStatusFilter = 'All';
+function statusOf(achievement){
+  if (achievement>=100) return {key:'Good', cls:'dot-good'};
+  if (achievement>=70) return {key:'Average', cls:'dot-avg'};
+  return {key:'Poor', cls:'dot-poor'};
+}
 function renderSummary(mon, incomeType){
   const hotels = filteredHotels();
-  let rows = hotels.map(h=>hotelStats(h, mon, incomeType));
+  const allRows = hotels.map(h=>hotelStats(h, mon, incomeType));
+  allRows.forEach(r=>{ const s = statusOf(r.achievement); r.statusKey = s.key; r.statusCls = s.cls; });
+
+  const counts = {All: allRows.length, Good:0, Average:0, Poor:0};
+  allRows.forEach(r=>counts[r.statusKey]++);
+  if (!counts.hasOwnProperty(summaryStatusFilter)) summaryStatusFilter = 'All';
+
+  const pillRow = document.getElementById('status-filter-row');
+  pillRow.innerHTML = ['All','Good','Average','Poor'].map(key=>{
+    const active = summaryStatusFilter===key ? ' active' : '';
+    return `<span class="status-pill${active}" data-status="${key}">${key} <span class="cnt">${counts[key]}</span></span>`;
+  }).join('');
+
+  let rows = summaryStatusFilter==='All' ? allRows : allRows.filter(r=>r.statusKey===summaryStatusFilter);
   rows.sort((a,b)=>{
     const av=a[sortKey], bv=b[sortKey];
     if (typeof av==='string') return sortDir*av.localeCompare(bv);
     return sortDir*(av-bv);
   });
-  document.getElementById('summary-sub').textContent = `Click a column header to sort · ${rows.length} active hotels · ${RAW.monthLabels[mon]}`;
+
+  const filterNote = summaryStatusFilter==='All' ? '' : ` · filtered: ${summaryStatusFilter}`;
+  document.getElementById('summary-sub').textContent = `Click a column header to sort · click a status to filter · ${rows.length} hotel${rows.length===1?'':'s'}${filterNote} · ${RAW.monthLabels[mon]}`;
+
   const tbody = document.querySelector('#summary-table tbody');
   tbody.innerHTML = rows.map(r=>{
-    let statusClass='dot-poor', statusLabel='Poor';
-    if (r.achievement>=100){statusClass='dot-good'; statusLabel='Good';}
-    else if (r.achievement>=70){statusClass='dot-avg'; statusLabel='Average';}
     const isOverridden = rateOverrides[r.name] !== undefined;
     const safeName = escAttr(r.name);
     return `<tr><td class="truncate" title="${escAttr(r.name)}">${r.name}</td><td>${r.brand}</td><td class="num">${r.rooms}</td>
@@ -548,9 +577,41 @@ function renderSummary(mon, incomeType){
       <td class="num">${fmtRM(r.target)}</td><td class="num">${fmtRM(r.actual)}</td>
       <td class="num">RM${r.salesPerStay.toFixed(2)}</td>
       <td class="num">${fmtPct(r.achievement)}</td>
-      <td><span class="status-dot ${statusClass}"></span>${statusLabel}</td></tr>`;
+      <td><span class="status-dot ${r.statusCls}"></span><span class="status-label" data-status="${r.statusKey}" title="Click to filter by ${r.statusKey}">${r.statusKey}</span></td></tr>`;
   }).join('');
+
+  if (rows.length){
+    const totRooms = rows.reduce((s,r)=>s+r.rooms,0);
+    const totRN = rows.reduce((s,r)=>s+r.roomNights,0);
+    const totTarget = rows.reduce((s,r)=>s+r.target,0);
+    const totActual = rows.reduce((s,r)=>s+r.actual,0);
+    const days = daysForMonth(mon);
+    const totOccRate = (totRooms>0 && days>0) ? (totRN/(totRooms*days))*100 : 0;
+    const totSalesPerStay = totRN>0 ? totActual/totRN : 0;
+    const totAchievement = totTarget>0 ? (totActual/totTarget)*100 : (totActual>0?100:0);
+    const totStatus = statusOf(totAchievement);
+    const totalLabel = summaryStatusFilter==='All' ? `Total (${rows.length})` : `Total &mdash; ${summaryStatusFilter} (${rows.length})`;
+    tbody.insertAdjacentHTML('beforeend', `<tr class="total-row"><td>${totalLabel}</td><td>&mdash;</td><td class="num">${fmtNum(totRooms)}</td>
+      <td class="num">${fmtNum(totRN)}</td><td class="num">${fmtPct(totOccRate)}</td>
+      <td>&mdash;</td><td>&mdash;</td>
+      <td class="num">${fmtRM(totTarget)}</td><td class="num">${fmtRM(totActual)}</td>
+      <td class="num">RM${totSalesPerStay.toFixed(2)}</td>
+      <td class="num">${fmtPct(totAchievement)}</td>
+      <td><span class="status-dot ${totStatus.cls}"></span>${totStatus.key}</td></tr>`);
+  }
 }
+document.getElementById('status-filter-row').addEventListener('click', e=>{
+  const pill = e.target.closest('.status-pill');
+  if (!pill) return;
+  summaryStatusFilter = pill.getAttribute('data-status');
+  renderSummary(monthSel.value, document.getElementById('f-income').value);
+});
+document.querySelector('#summary-table tbody').addEventListener('click', e=>{
+  const label = e.target.closest('.status-label');
+  if (!label) return;
+  summaryStatusFilter = label.getAttribute('data-status');
+  renderSummary(monthSel.value, document.getElementById('f-income').value);
+});
 document.querySelector('#summary-table tbody').addEventListener('change', e=>{
   if (!e.target.classList.contains('rate-override-input')) return;
   const hotel = e.target.getAttribute('data-hotel');
